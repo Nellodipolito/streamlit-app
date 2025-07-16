@@ -1,0 +1,11 @@
+# Azure Cognitive Search Configuration
+AZURE_SEARCH_SERVICE_NAME=yourservice
+AZURE_SEARCH_ADMIN_KEY=yourkey
+AZURE_SEARCH_INDEX_NAME=yourindex
+
+# Azure OpenAI Configuration
+AZURE_OPENAI_ENDPOINT=openaiendpoint
+AZURE_OPENAI_API_KEY=yourkey
+AZURE_OPENAI_EMBEDDING_DEPLOYMENT=yourmodel
+AZURE_OPENAI_API_VERSION=apiversion
+
