@@ -9,7 +9,7 @@ from agent import OrchestratorQAAgent
 
 # Page configuration
 st.set_page_config(
-    page_title="Medical Guidelines QA",
+    page_title="Medical Guidelines & MedlinePlusQA",
     page_icon="🏥",
     layout="wide"
 )
@@ -38,10 +38,12 @@ async def process_streaming_response(response_data: dict, message_placeholder):
     }
 
 # Main UI
-st.title("🏥 Medical Guidelines QA")
+st.title("🏥 Medical Guidelines & MedlinePlusQA")
 st.markdown("""
-Ask questions about medical guidelines and get evidence-based answers from our AI assistant.
-The system searches through medical guidelines and provides answers with citations.
+Ask questions about medical guidelines or general medical topics and get evidence-based answers from our AI assistant.\n
+The system searches through medical guidelines **and MedlinePlus health topics** to provide answers with citations.
+\n
+**MedlinePlus** is a trusted source of health information from the U.S. National Library of Medicine. Answers may include information from MedlinePlus as well as official medical guidelines.
 """)
 
 # Sidebar

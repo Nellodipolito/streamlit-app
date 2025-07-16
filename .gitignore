@@ -27,7 +27,7 @@ env/
 
 # Environment variables
 .env
-env_example.txt
+
 
 # IDE
 .idea/
