@@ -18,7 +18,7 @@ class GuidelinesQAAgent:
         # Azure Search configuration
         self.service_name = os.getenv('AZURE_SEARCH_SERVICE_NAME')
         self.admin_key = os.getenv('AZURE_SEARCH_ADMIN_KEY')
-        self.index_name = os.getenv('AZURE_SEARCH_INDEX_NAME_OPTIMIZED', 'guidelines-chunks-index-optimized-v2')
+        self.index_name = os.getenv('AZURE_SEARCH_INDEX_NAME', 'guidelines-chunks-index')
         
         if not self.service_name or not self.admin_key:
             raise ValueError("Missing Azure Search configuration!")
@@ -33,20 +33,10 @@ class GuidelinesQAAgent:
         self.openai_client = self._initialize_openai_client()
         
         # System prompt for query generation
-        self.query_system_prompt = """You are an expert at converting medical questions into search queries.
-Your task is to extract the key medical concepts and terms from the question to create an effective search query.
-Focus on medical terminology, conditions, treatments, and specific guideline aspects mentioned in the question."""
+        self.query_system_prompt = """You are an expert at converting medical questions into search queries.\nYour task is to extract the key medical concepts and terms from the question to create an effective search query.\nFocus on medical terminology, conditions, treatments, and specific guideline aspects mentioned in the question.\nNever invent or fabricate information."""
         
         # System prompt for answer generation
-        self.answer_system_prompt = """You are a medical expert assistant helping healthcare professionals understand medical guidelines.
-Your task is to provide accurate, well-structured answers based on the provided guideline excerpts.
-Always:
-1. Base your answers strictly on the provided guideline content
-2. Cite the specific guideline and year when providing information
-3. Maintain medical accuracy and precision
-4. Acknowledge if information is not available in the provided excerpts
-5. Structure complex answers with clear sections
-6. Include relevant recommendations or evidence levels if present"""
+        self.answer_system_prompt = """You are a medical expert assistant helping healthcare professionals understand medical guidelines.\nYour task is to provide accurate, well-structured answers based on the provided guideline excerpts.\nNever invent or fabricate information. If the answer is not in the provided content, say 'I don't know' or acknowledge the lack of information.\nAlways:\n1. Base your answers strictly on the provided guideline content\n2. Cite the specific guideline and year when providing information\n3. Maintain medical accuracy and precision\n4. Acknowledge if information is not available in the provided excerpts\n5. Structure complex answers with clear sections\n6. Include relevant recommendations or evidence levels if present"""
 
     def _initialize_openai_client(self):
         """Initialize OpenAI client based on configuration."""
@@ -131,6 +121,41 @@ Always:
                 raise Exception(f"Search failed: {response.text}")
         except Exception as e:
             raise Exception(f"Error searching guidelines: {e}")
+
+    async def list_all_guidelines(self, max_results: int = 2000) -> List[Dict[str, Any]]:
+        """Fetch all unique guideline titles and links from the index, paging twice if needed, and cache in memory."""
+        if hasattr(self, '_guidelines_cache') and self._guidelines_cache is not None:
+            return self._guidelines_cache
+        url = f"{self.endpoint}/indexes/{self.index_name}/docs/search?api-version=2023-11-01"
+        all_docs = []
+        for skip in [0, 1000]:
+            search_body = {
+                'search': '*',
+                'select': 'title,link,year',
+                'top': 1000,
+                'skip': skip
+            }
+            try:
+                async with httpx.AsyncClient() as client:
+                    response = await client.post(url, headers=self.headers, json=search_body)
+                if response.status_code == 200:
+                    docs = response.json().get('value', [])
+                    all_docs.extend(docs)
+                else:
+                    raise Exception(f"List guidelines failed: {response.text}")
+            except Exception as e:
+                raise Exception(f"Error listing guidelines: {e}")
+        seen = set()
+        unique_guidelines = []
+        for doc in all_docs:
+            title = doc.get('title', '')
+            link = doc.get('link', '')
+            year = doc.get('year', '')
+            if title and title not in seen:
+                seen.add(title)
+                unique_guidelines.append({'title': title, 'link': link, 'year': year})
+        self._guidelines_cache = unique_guidelines
+        return unique_guidelines
 
     def format_context(self, search_results: List[Dict[str, Any]]) -> str:
         """Format search results into context for the answer generation."""
@@ -269,8 +294,8 @@ class MedlineQAAgent:
             "api-key": self.admin_key
         }
         self.openai_client = self._initialize_openai_client()
-        self.query_system_prompt = """You are an expert at converting health questions into search queries. Extract the key medical concepts and terms from the question to create an effective search query for MedlinePlus health topics."""
-        self.answer_system_prompt = """You are a medical expert assistant helping users understand general health topics. Provide accurate, clear answers based on the provided MedlinePlus content. If information is not available, acknowledge it."""
+        self.query_system_prompt = """You are an expert at converting health questions into search queries. Extract the key medical concepts and terms from the question to create an effective search query for MedlinePlus health topics. Never invent or fabricate information."""
+        self.answer_system_prompt = """You are a medical expert assistant helping users understand general health topics. Provide accurate, clear answers based on the provided MedlinePlus content. Never invent or fabricate information. If information is not available, say 'I don't know' or acknowledge it."""
 
     def _initialize_openai_client(self):
         azure_endpoint = os.getenv('AZURE_OPENAI_ENDPOINT')
@@ -413,11 +438,10 @@ CONTENT: {content}
         }
 
 class OrchestratorQAAgent:
-    """Orchestrates which agent to use based on the user question."""
+    """Orchestrates which agent to use based on the user question, and decides if a new search is needed."""
     def __init__(self):
         self.guidelines_agent = GuidelinesQAAgent()
         self.medline_agent = MedlineQAAgent()
-        # Use the same OpenAI client as the guidelines agent for routing
         self.openai_client = self.guidelines_agent.openai_client
         self.routing_prompt = (
             "You are an expert assistant. Classify the following user question as either "
@@ -426,9 +450,14 @@ class OrchestratorQAAgent:
             "Respond with only 'guidelines' or 'medline'.\n"
             "Question: {question}"
         )
+        self.reuse_decision_prompt = (
+            "You are a helpful assistant. Given the user's new question and the previous conversation, "
+            "decide if the new question can be answered using only the information already retrieved in the previous conversation. "
+            "If yes, respond with 'reuse'. If not, respond with 'new search'.\n"
+            "Previous conversation:\n{history}\nNew question: {question}"
+        )
 
     async def _route(self, question: str) -> str:
-        """Use GPT to classify the question as 'guidelines' or 'medline'."""
         try:
             response = self.openai_client.chat.completions.create(
                 model="gpt-4",
@@ -443,11 +472,51 @@ class OrchestratorQAAgent:
                 return "guidelines"
             return "medline"
         except Exception as e:
-            # Fallback to medline if classification fails
             return "medline"
 
-    async def answer_question(self, question: str, top_k: int = 10, chat_history=None) -> Dict[str, Any]:
+    async def _should_reuse_history(self, question: str, chat_history) -> bool:
+        if not chat_history:
+            return False
+        # Build a short summary of the last N turns
+        history_str = "\n".join([
+            f"Q: {turn['question']}\nA: {turn['answer']}" for turn in chat_history[-3:]
+        ])
+        prompt = self.reuse_decision_prompt.format(history=history_str, question=question)
+        try:
+            response = self.openai_client.chat.completions.create(
+                model="gpt-4",
+                messages=[
+                    {"role": "system", "content": "You are a helpful assistant that decides if a new search is needed."},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.0
+            )
+            decision = response.choices[0].message.content.strip().lower()
+            print(f"[DEBUG] GPT decision for reuse: {decision}")
+            return "reuse" in decision
+        except Exception as e:
+            print(f"[DEBUG] Error in _should_reuse_history: {e}")
+            return False
+
+    async def answer_question(self, question: str, top_k: int = 10, chat_history=None) -> dict:
         agent_type = await self._route(question)
+        # Only try to reuse for guidelines agent (can be extended to medline if desired)
+        if agent_type == "guidelines" and chat_history:
+            should_reuse = await self._should_reuse_history(question, chat_history)
+            if should_reuse:
+                print("[DEBUG] Reusing previous chunks/context for answer generation.")
+                last_turn = chat_history[-1]
+                context = self.guidelines_agent.format_context(last_turn["chunks"])
+                return {
+                    "question": question,
+                    "search_query": last_turn["search_query"],
+                    "answer_generator": self.guidelines_agent.generate_answer(
+                        question, context, chat_history
+                    ),
+                    "chunks": last_turn["chunks"],
+                    "sources": last_turn["sources"]
+                }
+        # Otherwise, do a new search as normal
         if agent_type == "guidelines":
             return await self.guidelines_agent.answer_question(question, top_k=top_k, chat_history=chat_history)
         else:

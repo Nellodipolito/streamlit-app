@@ -39,6 +39,7 @@ async def process_streaming_response(response_data: dict, message_placeholder):
 
 # Main UI
 st.title("🏥 Medical Guidelines & MedlinePlusQA")
+
 st.markdown("""
 Ask questions about medical guidelines or general medical topics and get evidence-based answers from our AI assistant.\n
 The system searches through medical guidelines **and MedlinePlus health topics** to provide answers with citations.
@@ -72,6 +73,26 @@ with st.sidebar:
     if st.button("Clear Chat History"):
         st.session_state.chat_history = []
         st.rerun()
+
+    # Show all available guidelines in the index
+    with st.expander("📖 View all available guidelines in the index"):
+        with st.spinner("Loading available guidelines..."):
+            try:
+                guidelines = asyncio.run(st.session_state.qa_agent.guidelines_agent.list_all_guidelines())
+                if guidelines:
+                    for g in guidelines:
+                        title = g.get('title', '')
+                        link = g.get('link', '')
+                        year = g.get('year', '')
+                        display_title = f"{title} ({year})" if year else title
+                        if link:
+                            st.markdown(f"- [{display_title}]({link})")
+                        else:
+                            st.markdown(f"- {display_title}")
+                else:
+                    st.info("No guidelines found in the index.")
+            except Exception as e:
+                st.error(f"Error loading guidelines: {e}")
 
 # Chat interface
 chat_container = st.container()

@@ -2,6 +2,7 @@
 AZURE_SEARCH_SERVICE_NAME=yourservice
 AZURE_SEARCH_ADMIN_KEY=yourkey
 AZURE_SEARCH_INDEX_NAME=yourindex
+AZURE_MEDLINE_INDEX_NAME=yourindex
 
 # Azure OpenAI Configuration
 AZURE_OPENAI_ENDPOINT=openaiendpoint
