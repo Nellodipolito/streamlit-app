@@ -150,7 +150,8 @@ if page == "Q&A Chat":
                         header = chunk.get('header', '')
                         enriched_section_text = chunk.get('enriched_section_text', chunk.get('content', ''))
                         with st.expander(f"Chunk {i}: {title} ({year})"):
-                            st.markdown(f"**Header:** {header}")
+                            if header:
+                                st.markdown(f"**Header:** {header}")
                             st.markdown(enriched_section_text)
 
     # Question input
@@ -220,7 +221,8 @@ if page == "Q&A Chat":
                         header = chunk.get('header', '')
                         enriched_section_text = chunk.get('enriched_section_text', chunk.get('content', ''))
                         with st.expander(f"Chunk {i}: {title} ({year})"):
-                            st.markdown(f"**Header:** {header}")
+                            if header:
+                                st.markdown(f"**Header:** {header}")
                             st.markdown(enriched_section_text)
 
 elif page == "Diagnostic Analysis":
@@ -508,7 +510,9 @@ Patient: "I feel nauseous and sweaty, and I'm having trouble catching my breath.
                                 display_title = f"({i}) {title}{year_str}"
                                 
                             with st.expander(f"Evidence {display_title}"):
-                                st.markdown(f"**Section:** {evidence.get('header', '')}")
+                                header = evidence.get('header', '')
+                                if header:
+                                    st.markdown(f"**Section:** {header}")
                                 st.markdown(f"**Content:** {evidence.get('enriched_section_text', '')}")
                                 st.markdown(f"**Search Query:** {evidence.get('search_query', '')}")
                 
