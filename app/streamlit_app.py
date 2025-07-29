@@ -713,16 +713,14 @@ elif page == "About":
     # About section
     st.title("📋 About Medical AI Assistant")
     
-    # Introduction
     st.markdown("""
     ## 🎯 Overview
     
-    The **Medical AI Assistant** is a comprehensive AI-powered system designed to support healthcare professionals 
-    and researchers with evidence-based medical information and diagnostic assistance. Our platform combines 
-    advanced AI technology with trusted medical sources to provide accurate, cited responses.
+    AI-powered system for evidence-based medical information and diagnostic assistance. 
+    Combines medical guidelines, MedlinePlus data, and AI to provide accurate, cited responses.
     """)
     
-    # Key Features Section
+    # Key Features
     st.markdown("---")
     st.markdown("## ✨ Key Features")
     
@@ -730,205 +728,44 @@ elif page == "About":
     
     with col1:
         st.markdown("""
-        ### 🔍 **Q&A Chat System**
-        - **Medical Guidelines Search**: Query clinical guidelines and protocols
-        - **MedlinePlus Integration**: Access NIH health information
-        - **Evidence-Based Answers**: All responses include numbered citations
-        - **Real-time Streaming**: Progressive answer generation
-        - **Chat Memory**: Context-aware conversations
+        **🔍 Q&A Chat**
+        - Medical guidelines & MedlinePlus search
+        - Evidence-based answers with citations
+        - Real-time streaming responses
+        - Context-aware conversations
         
-        ### 🩺 **AI Diagnostic Assistant**
-        - **Patient Data Analysis**: Extract clinical findings from text
-        - **Focused Questions**: Target specific diagnostic aspects
-        - **Evidence-Based Diagnosis**: Backed by medical literature
-        - **Multi-Query Search**: Comprehensive evidence gathering
-        - **Follow-up Intelligence**: Smart question handling
+        **🩺 Diagnostic Assistant**
+        - Patient data analysis
+        - Evidence-based diagnosis
+        - Follow-up question handling
         """)
     
     with col2:
         st.markdown("""
-        ### 🔗 **Smart Citation System**
-        - **Numbered References**: (1), (2), (3) format
-        - **Direct Links**: Clickable source URLs
-        - **Source Verification**: Easy fact-checking
-        - **Context Preservation**: Maintains reference accuracy
+        **🔗 Smart Citations**
+        - Numbered references with links
+        - Easy source verification
+        - Context preservation
         
-        ### 🧠 **Intelligent Memory**
-        - **Context Awareness**: Remembers previous analysis
-        - **Smart Routing**: Reuse vs new search decisions
-        - **Conversation Flow**: Natural follow-up handling
-        - **History Tracking**: Persistent case records
+        **🧠 Intelligent Memory**
+        - Context awareness
+        - Smart routing decisions
+        - Persistent case records
         """)
     
-    # How It Works Section
+    # Important Disclaimer
     st.markdown("---")
-    st.markdown("## 🏗️ How It Works")
-    
-    # Create tabs for different workflows
-    tab1, tab2 = st.tabs(["🔍 **Q&A Workflow**", "🩺 **Diagnostic Workflow**"])
-    
-    with tab1:
-        st.markdown("""
-        ### Question & Answer Process
-        
-        1. **🎯 Query Processing**
-           - User submits medical question
-           - AI converts to optimized search query
-           - System routes to appropriate data source
-        
-        2. **🔍 Evidence Search**
-           - Vector similarity search through medical guidelines
-           - MedlinePlus health topics search
-           - Retrieval of most relevant sources
-        
-        3. **💬 Answer Generation**
-           - AI synthesizes information from sources
-           - Generates streaming response with citations
-           - Provides numbered references to sources
-        
-        4. **📚 Source Display**
-           - Shows all consulted sources with links
-           - Enables easy verification and further reading
-        """)
-    
-    with tab2:
-        st.markdown("""
-        ### Diagnostic Analysis Process
-        
-        1. **📊 Data Extraction**
-           - Analyzes patient summary and conversations
-           - Extracts key clinical findings
-           - Identifies relevant demographics and history
-        
-        2. **🎯 Question Focus** *(Optional)*
-           - User selects specific diagnostic question
-           - System tailors analysis accordingly
-           - Maintains comprehensive fallback option
-        
-        3. **🔍 Evidence Gathering**
-           - Generates multiple targeted search queries
-           - Searches medical literature for evidence
-           - Deduplicates and ranks sources
-        
-        4. **🩺 Analysis Generation**
-           - AI provides diagnostic reasoning
-           - Includes numbered citations to evidence
-           - Streams results in real-time
-        
-        5. **❓ Follow-up Intelligence**
-           - Suggests related questions
-           - Decides whether to reuse existing data
-           - Enables deep-dive questioning
-        """)
-    
-    # Technology Stack
-    st.markdown("---")
-    st.markdown("## 🛠️ Technology Stack")
-    
-    col1, col2, col3 = st.columns(3)
-    
-    with col1:
-        st.markdown("""
-        **🤖 AI & ML**
-        - OpenAI GPT-4
-        - Text Embedding Ada-002
-        - Vector Similarity Search
-        - Streaming Response Generation
-        """)
-    
-    with col2:
-        st.markdown("""
-        **🔍 Search & Data**
-        - Azure Cognitive Search
-        - Medical Guidelines Index
-        - MedlinePlus Health Topics
-        - Vector Embeddings
-        """)
-    
-    with col3:
-        st.markdown("""
-        **💻 Application**
-        - Streamlit Frontend
-        - FastAPI Backend
-        - Pydantic Data Models
-        - Async/Await Architecture
-        """)
-    
-    # Data Sources
-    st.markdown("---")
-    st.markdown("## 📚 Data Sources")
-    
-    st.markdown("""
-    ### 🏥 **Medical Guidelines**
-    - Clinical practice guidelines from medical societies
-    - Evidence-based treatment protocols
-    - Diagnostic criteria and recommendations
-    - Professional medical standards
-    
-    ### 🔬 **MedlinePlus (NIH)**
-    - Trusted health information from the U.S. National Library of Medicine
-    - Patient-friendly explanations of medical conditions
-    - General health topics and wellness information
-    - Regularly updated and medically reviewed content
-    """)
-    
-    # Important Disclaimers
-    st.markdown("---")
-    st.markdown("## ⚠️ Important Disclaimers")
-    
     st.warning("""
-    **🏥 Medical Disclaimer:**
+    **⚠️ Medical Disclaimer:**
     
-    This AI assistant is designed for **educational and research purposes only**. It is not intended to:
-    - Replace professional medical advice
-    - Provide definitive medical diagnoses
-    - Substitute for clinical judgment
-    - Offer treatment recommendations without physician oversight
-    
-    **Always consult qualified healthcare professionals for medical decisions.**
+    For **educational and research purposes only**. Not a substitute for professional medical advice. 
+    Always consult qualified healthcare professionals for medical decisions.
     """)
-    
-    st.info("""
-    **🔍 AI Limitations:**
-    
-    - AI responses should be verified against official medical sources
-    - System knowledge is based on training data with specific cutoff dates
-    - Complex medical cases require human clinical expertise
-    - Always review cited sources for accuracy and context
-    """)
-    
-    # Usage Guidelines
-    st.markdown("---")
-    st.markdown("## 📖 Usage Guidelines")
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        st.markdown("""
-        ### ✅ **Best Practices**
-        - Use for medical education and research
-        - Verify information with cited sources
-        - Cross-reference with current guidelines
-        - Combine with clinical expertise
-        - Ask specific, detailed questions
-        """)
-    
-    with col2:
-        st.markdown("""
-        ### ❌ **Avoid**
-        - Using as sole basis for medical decisions
-        - Bypassing professional medical consultation
-        - Treating AI responses as definitive diagnoses
-        - Ignoring cited source materials
-        - Making treatment changes without physician approval
-        """)
-    
     
     # Footer
     st.markdown("---")
     st.markdown("""
     <div style='text-align: center; color: #666; padding: 20px;'>
-        <p><strong>Medical AI Assistant</strong> - Built with Azure Cognitive Search, OpenAI, FastAPI, and Streamlit</p>
-        <p><em>Empowering healthcare professionals with AI-driven evidence-based information</em></p>
+        <p><strong>Medical AI Assistant</strong></p>
     </div>
     """, unsafe_allow_html=True) 
