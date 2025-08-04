@@ -1,12 +1,12 @@
 """
-QA Agent for medical guidelines using Azure Cognitive Search and OpenAI.
+QA Agent for medical guidelines using Azure Cognitive Search and LangChain.
 """
 
 import os
-import openai
 import httpx
 from typing import List, Dict, Any, Tuple
 from dotenv import load_dotenv
+from langchain_openai import AzureChatOpenAI, AzureOpenAIEmbeddings
 
 # Load environment variables
 load_dotenv()
@@ -29,8 +29,9 @@ class GuidelinesQAAgent:
             "api-key": self.admin_key
         }
         
-        # Initialize OpenAI client
+        # Initialize LangChain clients
         self.openai_client = self._initialize_openai_client()
+        self.embeddings_client = self._initialize_embeddings_client()
         
         # System prompt for query generation
         self.query_system_prompt = """You are an expert at converting medical questions into search queries.\nYour task is to extract the key medical concepts and terms from the question to create an effective search query.\nFocus on medical terminology, conditions, treatments, and specific guideline aspects mentioned in the question.\nNever invent or fabricate information."""
@@ -39,47 +40,55 @@ class GuidelinesQAAgent:
         self.answer_system_prompt = """You are a medical expert assistant helping healthcare professionals understand medical guidelines.\nYour task is to provide accurate, well-structured answers based on the provided guideline excerpts.\nNever invent or fabricate information. If the answer is not in the provided content, say 'I don't know' or acknowledge the lack of information.\nAlways:\n1. Base your answers strictly on the provided guideline content\n2. Use numbered citations (1), (2), (3), etc. when referencing specific sources in your answer\n3. Cite the specific guideline and year when providing information\n4. Maintain medical accuracy and precision\n5. Acknowledge if information is not available in the provided excerpts\n6. Structure complex answers with clear sections\n7. Include relevant recommendations or evidence levels if present\n\nIMPORTANT: When referencing information from sources, include numbered citations in your response using the format (1), (2), (3), etc. For example: 'According to the guidelines (1), the recommended treatment is...' or 'Clinical studies show (2)...'"""
 
     def _initialize_openai_client(self):
-        """Initialize OpenAI client based on configuration."""
+        """Initialize LangChain Azure OpenAI client based on configuration."""
         # Check for Azure OpenAI configuration
         azure_endpoint = os.getenv('AZURE_OPENAI_ENDPOINT')
         azure_api_key = os.getenv('AZURE_OPENAI_API_KEY')
         azure_deployment = os.getenv('AZURE_OPENAI_DEPLOYMENT', 'gpt-4')
-        azure_api_version = os.getenv('AZURE_OPENAI_API_VERSION', '2023-12-01-preview')
-        
-        # Check for OpenAI configuration
-        openai_api_key = os.getenv('OPENAI_API_KEY')
+        azure_api_version = os.getenv('AZURE_OPENAI_API_VERSION', '2025-02-01')
         
         if azure_endpoint and azure_api_key:
-            return openai.AzureOpenAI(
+            return AzureChatOpenAI(
                 azure_endpoint=azure_endpoint,
                 api_key=azure_api_key,
-                api_version=azure_api_version
+                api_version=azure_api_version,
+                deployment_name=azure_deployment,
             )
-        elif openai_api_key:
-            return openai.OpenAI(api_key=openai_api_key)
         else:
-            raise ValueError("Missing OpenAI configuration!")
+            raise ValueError("Missing Azure OpenAI configuration!")
+
+    def _initialize_embeddings_client(self):
+        """Initialize LangChain Azure OpenAI embeddings client."""
+        azure_endpoint = os.getenv('AZURE_OPENAI_ENDPOINT')
+        azure_api_key = os.getenv('AZURE_OPENAI_API_KEY')
+        azure_api_version = os.getenv('AZURE_OPENAI_API_VERSION', '2025-02-01')
+        
+        if azure_endpoint and azure_api_key:
+            return AzureOpenAIEmbeddings(
+                azure_endpoint=azure_endpoint,
+                api_key=azure_api_key,
+                api_version=azure_api_version,
+                deployment="text-embedding-ada-002",
+            )
+        else:
+            raise ValueError("Missing Azure OpenAI configuration!")
 
     async def generate_search_query(self, question: str) -> Tuple[str, List[float]]:
         """Generate an effective search query and embedding from the question."""
         try:
-            # Generate a better search query using GPT
-            response = self.openai_client.chat.completions.create(
-                model="gpt-4",
-                messages=[
-                    {"role": "system", "content": self.query_system_prompt},
-                    {"role": "user", "content": f"Convert this question into an effective search query: {question}"}
-                ],
-                temperature=0.0
-            )
-            search_query = response.choices[0].message.content.strip()
+            # Generate a better search query using LangChain
+            from langchain.schema import HumanMessage, SystemMessage
             
-            # Generate embedding for vector search
-            embedding_response = self.openai_client.embeddings.create(
-                model="text-embedding-ada-002",
-                input=search_query
-            )
-            vector = embedding_response.data[0].embedding
+            messages = [
+                SystemMessage(content=self.query_system_prompt),
+                HumanMessage(content=f"Convert this question into an effective search query: {question}")
+            ]
+            
+            response = await self.openai_client.ainvoke(messages)
+            search_query = response.content.strip()
+            
+            # Generate embedding for vector search using LangChain
+            vector = await self.embeddings_client.aembed_query(search_query)
             
             return search_query, vector
             
@@ -186,6 +195,142 @@ CONTENT: {enriched_section_text}
         
         return "\n".join(context_parts)
 
+    def format_docs_with_id(self, results: List[Dict]) -> str:
+        """Format documents with unique IDs for citation tracking, grouping by source link."""
+        # Group chunks by their source link (same source = same link)
+        grouped_by_link = {}
+        for result in results:
+            link = result.get('link', '')
+            if link not in grouped_by_link:
+                grouped_by_link[link] = []
+            grouped_by_link[link].append(result)
+        
+        parts = []
+        for i, (link, chunks) in enumerate(grouped_by_link.items(), 1):
+            # Get metadata from first chunk (they should be the same for same source)
+            first_chunk = chunks[0]
+            title = first_chunk.get('title', '')
+            year = first_chunk.get('year', '')
+            
+            # Combine all content from this source
+            combined_content = []
+            for chunk in chunks:
+                header = chunk.get('header', '')
+                content = chunk.get('enriched_section_text', '')
+                if header:
+                    combined_content.append(f"Section: {header}\n{content}")
+                else:
+                    combined_content.append(content)
+            
+            # Join all content with separators
+            full_content = "\n\n---\n\n".join(combined_content)
+            
+            parts.append(
+                f"SOURCE ID: {i}\n"
+                f"TITLE:     {title} ({year})\n"
+                f"CONTENT:   {full_content}"
+            )
+        
+        return "\n\n".join(parts)
+
+    async def generate_cited_answer(self, question: str, search_results: List[Dict]) -> Dict:
+        """Generate an answer with structured citations using LangChain's structured output."""
+        try:
+            # 1) Format context
+            formatted = self.format_docs_with_id(search_results)
+
+            # 2) Build messages
+            from langchain.schema import HumanMessage, SystemMessage
+            
+            messages = [
+                SystemMessage(content=self.answer_system_prompt),
+                HumanMessage(content=
+                    f"Here are your retrieved sources:\n\n{formatted}\n\n"
+                    f"Question: {question}\n\n"
+                    "Answer the user question based only on the given sources, and cite the sources used. "
+                    "Please respond in the following JSON format:\n"
+                    "{{\n"
+                    '  "answer": "Your answer here with citations like (1), (2), etc.",\n'
+                    '  "citations": [1, 2, 3]\n'
+                    "}}"
+                )
+            ]
+
+            # 3) Use regular LLM call with JSON response format
+            response = await self.openai_client.ainvoke(messages)
+            response_text = response.content.strip()
+            
+            # Debug: Log the raw response
+            print(f"DEBUG: Raw LLM response: {response_text}")
+            
+            # 4) Parse the response manually
+            try:
+                import json
+                import re
+                
+                # Try to extract JSON from the response
+                json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
+                if json_match:
+                    json_str = json_match.group()
+                    parsed = json.loads(json_str)
+                    
+                    # Debug: Log the parsed JSON
+                    print(f"DEBUG: Parsed JSON: {parsed}")
+                    
+                    # Validate the structure
+                    if 'answer' in parsed and 'citations' in parsed:
+                        answer = parsed['answer']
+                        citations = parsed['citations']
+                        
+                        # Debug: Log the citations array
+                        print(f"DEBUG: Citations array: {citations}")
+                        
+                        # 5) Map IDs back to metadata (using grouped sources)
+                        # Group search results by link for proper mapping
+                        grouped_by_link = {}
+                        for result in search_results:
+                            link = result.get('link', '')
+                            if link not in grouped_by_link:
+                                grouped_by_link[link] = result
+                        
+                        # Debug: Log the grouped sources
+                        print(f"DEBUG: Grouped sources: {list(grouped_by_link.keys())}")
+                        
+                        mapped = []
+                        for i, (link, result) in enumerate(grouped_by_link.items(), 1):
+                            if i in citations:
+                                mapped.append({
+                                    "id": i,
+                                    "title": result.get("title", ""),
+                                    "year": result.get("year", ""),
+                                    "link": link
+                                })
+                        
+                        # Debug: Log the final mapped citations
+                        print(f"DEBUG: Final mapped citations: {mapped}")
+                        
+                        return {
+                            "answer": answer,
+                            "citations": mapped
+                        }
+                    else:
+                        raise ValueError("Invalid JSON structure")
+                else:
+                    # Fallback: treat the entire response as answer with no citations
+                    return {
+                        "answer": response_text,
+                        "citations": []
+                    }
+                    
+            except (json.JSONDecodeError, ValueError) as e:
+                # Fallback: treat the entire response as answer with no citations
+                return {
+                    "answer": response_text,
+                    "citations": []
+                }
+        except Exception as e:
+            raise Exception(f"Error generating cited answer: {e}")
+
     async def generate_answer(self, question: str, context: str, chat_history=None):
         """Generate an answer using the retrieved context and chat history."""
         try:
@@ -201,23 +346,18 @@ CONTENT: {enriched_section_text}
 
             history_prompt = build_history_prompt(chat_history)
             user_content = f"{history_prompt}\nQuestion: {question}\n\nRetrieved Guidelines:\n{context}\n\nPlease provide a comprehensive answer based on these guidelines."
+            
+            from langchain.schema import HumanMessage, SystemMessage
+            
             messages = [
-                {"role": "system", "content": self.answer_system_prompt},
-                {"role": "user", "content": user_content}
+                SystemMessage(content=self.answer_system_prompt),
+                HumanMessage(content=user_content)
             ]
 
-            response = self.openai_client.chat.completions.create(
-                model="gpt-4",
-                messages=messages,
-                temperature=0.1,
-                max_tokens=1000,
-                stream=True
-            )
-
-            for chunk in response:
-                delta = chunk.choices[0].delta
-                if hasattr(delta, "content") and delta.content:
-                    yield delta.content
+            # Use LangChain streaming
+            async for chunk in self.openai_client.astream(messages):
+                if chunk.content:
+                    yield chunk.content
 
         except Exception as e:
             raise Exception(f"Error generating answer: {e}")
@@ -277,15 +417,15 @@ CONTENT: {enriched_section_text}
             "link": result.get('link', '')
         } for result in search_results]
         
-        # Generate answer
-        context = self.format_context(search_results)
+        # Generate the citation-aware answer
+        cited_output = await self.generate_cited_answer(question, search_results)
         
         return {
             "question": question,
             "search_query": search_query,
-            "answer_generator": self.generate_answer(question, context, chat_history),
-            "chunks": chunks,
-            "sources": sources
+            "answer": cited_output["answer"],
+            "sources": cited_output["citations"],
+            "chunks": chunks
         } 
 
 class MedlineQAAgent:
@@ -302,41 +442,58 @@ class MedlineQAAgent:
             "api-key": self.admin_key
         }
         self.openai_client = self._initialize_openai_client()
+        self.embeddings_client = self._initialize_embeddings_client()
         self.query_system_prompt = """You are an expert at converting health questions into search queries. Extract the key medical concepts and terms from the question to create an effective search query for MedlinePlus health topics. Never invent or fabricate information."""
-        self.answer_system_prompt = """You are a medical expert assistant helping users understand general health topics. Provide accurate, clear answers based on the provided MedlinePlus content. Never invent or fabricate information. If information is not available, say 'I don't know' or acknowledge it."""
+        self.answer_system_prompt = """You are a medical expert assistant helping users understand general health topics. Provide accurate, clear answers based on the provided MedlinePlus content. Never invent or fabricate information. If information is not available, say 'I don't know' or acknowledge it. Always cite the specific sources you use by referencing their source IDs."""
 
     def _initialize_openai_client(self):
+        """Initialize LangChain Azure OpenAI client based on configuration."""
         azure_endpoint = os.getenv('AZURE_OPENAI_ENDPOINT')
         azure_api_key = os.getenv('AZURE_OPENAI_API_KEY')
-        azure_api_version = os.getenv('AZURE_OPENAI_API_VERSION', '2023-12-01-preview')
-        openai_api_key = os.getenv('OPENAI_API_KEY')
+        azure_deployment = os.getenv('AZURE_OPENAI_DEPLOYMENT', 'gpt-4')
+        azure_api_version = os.getenv('AZURE_OPENAI_API_VERSION', '2025-02-01')
+        
         if azure_endpoint and azure_api_key:
-            return openai.AzureOpenAI(
+            return AzureChatOpenAI(
                 azure_endpoint=azure_endpoint,
                 api_key=azure_api_key,
-                api_version=azure_api_version
+                api_version=azure_api_version,
+                deployment_name=azure_deployment,
             )
-        elif openai_api_key:
-            return openai.OpenAI(api_key=openai_api_key)
         else:
-            raise ValueError("Missing OpenAI configuration!")
+            raise ValueError("Missing Azure OpenAI configuration!")
+
+    def _initialize_embeddings_client(self):
+        """Initialize LangChain Azure OpenAI embeddings client."""
+        azure_endpoint = os.getenv('AZURE_OPENAI_ENDPOINT')
+        azure_api_key = os.getenv('AZURE_OPENAI_API_KEY')
+        azure_api_version = os.getenv('AZURE_OPENAI_API_VERSION', '2025-02-01')
+        
+        if azure_endpoint and azure_api_key:
+            return AzureOpenAIEmbeddings(
+                azure_endpoint=azure_endpoint,
+                api_key=azure_api_key,
+                api_version=azure_api_version,
+                deployment="text-embedding-ada-002",
+            )
+        else:
+            raise ValueError("Missing Azure OpenAI configuration!")
 
     async def generate_search_query(self, question: str) -> Tuple[str, List[float]]:
         try:
-            response = self.openai_client.chat.completions.create(
-                model="gpt-4",
-                messages=[
-                    {"role": "system", "content": self.query_system_prompt},
-                    {"role": "user", "content": f"Convert this question into an effective search query: {question}"}
-                ],
-                temperature=0.0
-            )
-            search_query = response.choices[0].message.content.strip()
-            embedding_response = self.openai_client.embeddings.create(
-                model="text-embedding-ada-002",
-                input=search_query
-            )
-            vector = embedding_response.data[0].embedding
+            from langchain.schema import HumanMessage, SystemMessage
+            
+            messages = [
+                SystemMessage(content=self.query_system_prompt),
+                HumanMessage(content=f"Convert this question into an effective search query: {question}")
+            ]
+            
+            response = await self.openai_client.ainvoke(messages)
+            search_query = response.content.strip()
+            
+            # Generate embedding for vector search using LangChain
+            vector = await self.embeddings_client.aembed_query(search_query)
+            
             return search_query, vector
         except Exception as e:
             raise Exception(f"Error generating search query: {e}")
@@ -380,6 +537,140 @@ CONTENT: {content}
             context_parts.append(context_entry)
         return "\n".join(context_parts)
 
+    def format_docs_with_id(self, results: List[Dict]) -> str:
+        """Format documents with unique IDs for citation tracking, grouping by source URL."""
+        # Group chunks by their source URL (same source = same URL)
+        grouped_by_url = {}
+        for result in results:
+            url = result.get('url', '')
+            if url not in grouped_by_url:
+                grouped_by_url[url] = []
+            grouped_by_url[url].append(result)
+        
+        parts = []
+        for i, (url, chunks) in enumerate(grouped_by_url.items(), 1):
+            # Get metadata from first chunk (they should be the same for same source)
+            first_chunk = chunks[0]
+            title = first_chunk.get('title', '')
+            meta_desc = first_chunk.get('meta_desc', '')
+            
+            # Combine all content from this source
+            combined_content = []
+            for chunk in chunks:
+                content = chunk.get('content', '')
+                if content:
+                    combined_content.append(content)
+            
+            # Join all content with separators
+            full_content = "\n\n---\n\n".join(combined_content)
+            
+            parts.append(
+                f"SOURCE ID: {i}\n"
+                f"TITLE:     {title}\n"
+                f"SUMMARY:   {meta_desc}\n"
+                f"CONTENT:   {full_content}"
+            )
+        
+        return "\n\n".join(parts)
+
+    async def generate_cited_answer(self, question: str, search_results: List[Dict]) -> Dict:
+        """Generate an answer with structured citations using LangChain's structured output."""
+        try:
+            # 1) Format context
+            formatted = self.format_docs_with_id(search_results)
+
+            # 2) Build messages
+            from langchain.schema import HumanMessage, SystemMessage
+            
+            messages = [
+                SystemMessage(content=self.answer_system_prompt),
+                HumanMessage(content=
+                    f"Here are your retrieved sources:\n\n{formatted}\n\n"
+                    f"Question: {question}\n\n"
+                    "Answer the user question based only on the given sources, and cite the sources used. "
+                    "Please respond in the following JSON format:\n"
+                    "{{\n"
+                    '  "answer": "Your answer here with citations like (1), (2), etc.",\n'
+                    '  "citations": [1, 2, 3]\n'
+                    "}}"
+                )
+            ]
+
+            # 3) Use regular LLM call with JSON response format
+            response = await self.openai_client.ainvoke(messages)
+            response_text = response.content.strip()
+            
+            # Debug: Log the raw response
+            print(f"DEBUG: Raw LLM response: {response_text}")
+            
+            # 4) Parse the response manually
+            try:
+                import json
+                import re
+                
+                # Try to extract JSON from the response
+                json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
+                if json_match:
+                    json_str = json_match.group()
+                    parsed = json.loads(json_str)
+                    
+                    # Debug: Log the parsed JSON
+                    print(f"DEBUG: Parsed JSON: {parsed}")
+                    
+                    # Validate the structure
+                    if 'answer' in parsed and 'citations' in parsed:
+                        answer = parsed['answer']
+                        citations = parsed['citations']
+                        
+                        # Debug: Log the citations array
+                        print(f"DEBUG: Citations array: {citations}")
+                        
+                        # 5) Map IDs back to metadata (using grouped sources)
+                        # Group search results by URL for proper mapping
+                        grouped_by_url = {}
+                        for result in search_results:
+                            url = result.get('url', '')
+                            if url not in grouped_by_url:
+                                grouped_by_url[url] = result
+                        
+                        # Debug: Log the grouped sources
+                        print(f"DEBUG: Grouped sources: {list(grouped_by_url.keys())}")
+                        
+                        mapped = []
+                        for i, (url, result) in enumerate(grouped_by_url.items(), 1):
+                            if i in citations:
+                                mapped.append({
+                                    "id": i,
+                                    "title": result.get("title", ""),
+                                    "url": url,
+                                    "meta_desc": result.get("meta_desc", "")
+                                })
+                        
+                        # Debug: Log the final mapped citations
+                        print(f"DEBUG: Final mapped citations: {mapped}")
+                        
+                        return {
+                            "answer": answer,
+                            "citations": mapped
+                        }
+                    else:
+                        raise ValueError("Invalid JSON structure")
+                else:
+                    # Fallback: treat the entire response as answer with no citations
+                    return {
+                        "answer": response_text,
+                        "citations": []
+                    }
+                    
+            except (json.JSONDecodeError, ValueError) as e:
+                # Fallback: treat the entire response as answer with no citations
+                return {
+                    "answer": response_text,
+                    "citations": []
+                }
+        except Exception as e:
+            raise Exception(f"Error generating cited answer: {e}")
+
     async def generate_answer(self, question: str, context: str, chat_history=None):
         try:
             def build_history_prompt(chat_history, max_turns=30):
@@ -394,21 +685,18 @@ CONTENT: {content}
 
             history_prompt = build_history_prompt(chat_history)
             user_content = f"{history_prompt}\nQuestion: {question}\n\nRetrieved Health Topics:\n{context}\n\nPlease provide a comprehensive answer based on these health topics."
+            
+            from langchain.schema import HumanMessage, SystemMessage
+            
             messages = [
-                {"role": "system", "content": self.answer_system_prompt},
-                {"role": "user", "content": user_content}
+                SystemMessage(content=self.answer_system_prompt),
+                HumanMessage(content=user_content)
             ]
-            response = self.openai_client.chat.completions.create(
-                model="gpt-4",
-                messages=messages,
-                temperature=0.1,
-                max_tokens=1000,
-                stream=True
-            )
-            for chunk in response:
-                delta = chunk.choices[0].delta
-                if hasattr(delta, "content") and delta.content:
-                    yield delta.content
+            
+            # Use LangChain streaming
+            async for chunk in self.openai_client.astream(messages):
+                if chunk.content:
+                    yield chunk.content
         except Exception as e:
             raise Exception(f"Error generating answer: {e}")
 
@@ -436,13 +724,15 @@ CONTENT: {content}
             "title": result.get('title', ''),
             "url": result.get('url', '')
         } for result in search_results]
-        context = self.format_context(search_results)
+        # Generate the citation-aware answer
+        cited_output = await self.generate_cited_answer(question, search_results)
+        
         return {
             "question": question,
             "search_query": search_query,
-            "answer_generator": self.generate_answer(question, context, chat_history),
-            "chunks": chunks,
-            "sources": sources
+            "answer": cited_output["answer"],
+            "sources": cited_output["citations"],
+            "chunks": chunks
         }
 
 class DiagnosticAgent:
@@ -463,8 +753,9 @@ class DiagnosticAgent:
             "api-key": self.admin_key
         }
         
-        # Initialize OpenAI client
+        # Initialize LangChain clients
         self.openai_client = self._initialize_openai_client()
+        self.embeddings_client = self._initialize_embeddings_client()
         
         # System prompts for different diagnostic tasks
         self.extraction_prompt = """You are a medical expert. Analyze the patient data and extract key clinical information.
@@ -529,23 +820,37 @@ class DiagnosticAgent:
         Make queries specific and medical terminology focused."""
 
     def _initialize_openai_client(self):
-        """Initialize OpenAI client based on configuration."""
+        """Initialize LangChain Azure OpenAI client based on configuration."""
         azure_endpoint = os.getenv('AZURE_OPENAI_ENDPOINT')
         azure_api_key = os.getenv('AZURE_OPENAI_API_KEY')
         azure_deployment = os.getenv('AZURE_OPENAI_DEPLOYMENT', 'gpt-4')
-        azure_api_version = os.getenv('AZURE_OPENAI_API_VERSION', '2023-12-01-preview')
-        openai_api_key = os.getenv('OPENAI_API_KEY')
+        azure_api_version = os.getenv('AZURE_OPENAI_API_VERSION', '2025-02-01')
         
         if azure_endpoint and azure_api_key:
-            return openai.AzureOpenAI(
+            return AzureChatOpenAI(
                 azure_endpoint=azure_endpoint,
                 api_key=azure_api_key,
-                api_version=azure_api_version
+                api_version=azure_api_version,
+                deployment_name=azure_deployment,
             )
-        elif openai_api_key:
-            return openai.OpenAI(api_key=openai_api_key)
         else:
-            raise ValueError("Missing OpenAI configuration!")
+            raise ValueError("Missing Azure OpenAI configuration!")
+
+    def _initialize_embeddings_client(self):
+        """Initialize LangChain Azure OpenAI embeddings client."""
+        azure_endpoint = os.getenv('AZURE_OPENAI_ENDPOINT')
+        azure_api_key = os.getenv('AZURE_OPENAI_API_KEY')
+        azure_api_version = os.getenv('AZURE_OPENAI_API_VERSION', '2025-02-01')
+        
+        if azure_endpoint and azure_api_key:
+            return AzureOpenAIEmbeddings(
+                azure_endpoint=azure_endpoint,
+                api_key=azure_api_key,
+                api_version=azure_api_version,
+                deployment="text-embedding-ada-002",
+            )
+        else:
+            raise ValueError("Missing Azure OpenAI configuration!")
 
     async def extract_key_findings(self, patient_data: Dict[str, Any]) -> Dict[str, Any]:
         """Extract key clinical findings from patient data."""
@@ -559,24 +864,37 @@ class DiagnosticAgent:
             Chief Complaint: {patient_data.get('chief_complaint', '')}
             """
             
-            response = self.openai_client.chat.completions.create(
-                model="gpt-4",
-                messages=[
-                    {"role": "system", "content": self.extraction_prompt},
-                    {"role": "user", "content": f"Extract key clinical findings from this patient data:\n{patient_text}"}
-                ],
-                temperature=0.1
-            )
+            from langchain.schema import HumanMessage, SystemMessage
             
-            findings_text = response.choices[0].message.content.strip()
+            messages = [
+                SystemMessage(content=self.extraction_prompt),
+                HumanMessage(content=f"Extract key clinical findings from this patient data:\n{patient_text}")
+            ]
             
-            # Parse findings into structured format
-            findings = {
-                "processed_summary": findings_text,
-                "key_findings": self._parse_findings(findings_text)
+            # Use streaming for faster response
+            async def clinical_summary_stream():
+                full_response = ""
+                async for chunk in self.openai_client.astream(messages):
+                    if chunk.content:
+                        full_response += chunk.content
+                        yield chunk.content
+                
+                # After streaming is complete, parse findings
+                findings = self._parse_findings(full_response)
+                
+                # Store findings in session state for later retrieval
+                import streamlit as st
+                if 'clinical_findings' not in st.session_state:
+                    st.session_state.clinical_findings = {}
+                st.session_state.clinical_findings = {
+                    "processed_summary": full_response,
+                    "key_findings": findings
+                }
+            
+            return {
+                "summary_generator": clinical_summary_stream(),
+                "patient_data": patient_data  # Keep original data for reference
             }
-            
-            return findings
             
         except Exception as e:
             raise Exception(f"Error extracting findings: {e}")
@@ -599,16 +917,15 @@ class DiagnosticAgent:
     async def generate_search_queries(self, findings: Dict[str, Any]) -> List[str]:
         """Generate search queries based on key findings."""
         try:
-            response = self.openai_client.chat.completions.create(
-                model="gpt-4",
-                messages=[
-                    {"role": "system", "content": self.evidence_search_prompt},
-                    {"role": "user", "content": f"Generate 5-7 specific search queries based on these clinical findings:\n{findings['processed_summary']}"}
-                ],
-                temperature=0.1
-            )
+            from langchain.schema import HumanMessage, SystemMessage
             
-            queries_text = response.choices[0].message.content.strip()
+            messages = [
+                SystemMessage(content=self.evidence_search_prompt),
+                HumanMessage(content=f"Generate 5-7 specific search queries based on these clinical findings:\n{findings['processed_summary']}")
+            ]
+            
+            response = await self.openai_client.ainvoke(messages)
+            queries_text = response.content.strip()
             queries = [q.strip().lstrip('- •*1234567890.').strip() for q in queries_text.split('\n') if q.strip()]
             
             return queries[:7]  # Limit to 7 queries
@@ -622,12 +939,8 @@ class DiagnosticAgent:
         
         for query in queries:
             try:
-                # Generate embedding for the query
-                embedding_response = self.openai_client.embeddings.create(
-                    model="text-embedding-ada-002",
-                    input=query
-                )
-                vector = embedding_response.data[0].embedding
+                # Generate embedding for the query using LangChain
+                vector = await self.embeddings_client.aembed_query(query)
                 
                 # Search the guidelines index
                 url = f"{self.endpoint}/indexes/{self.index_name}/docs/search?api-version=2023-11-01"
@@ -669,28 +982,50 @@ class DiagnosticAgent:
         
         return unique_results
 
+    def format_evidence_with_id(self, evidence: List[Dict]) -> str:
+        """Format evidence with unique IDs, grouping by link."""
+        grouped_by_link = {}
+        for item in evidence:
+            link = item.get('link', '')
+            if link not in grouped_by_link:
+                grouped_by_link[link] = []
+            grouped_by_link[link].append(item)
+        
+        parts = []
+        for i, (link, chunks) in enumerate(grouped_by_link.items(), 1):
+            first_chunk = chunks[0]
+            title = first_chunk.get('title', '')
+            year = first_chunk.get('year', '')
+            
+            combined_content = []
+            for chunk in chunks:
+                header = chunk.get('header', '')
+                content = chunk.get('enriched_section_text', '')
+                if header:
+                    combined_content.append(f"Section: {header}\n{content}")
+                else:
+                    combined_content.append(content)
+            full_content = "\n\n---\n\n".join(combined_content)
+            parts.append(
+                f"EVIDENCE ID: {i}\n"
+                f"TITLE:     {title} ({year})\n"
+                f"CONTENT:   {full_content}"
+            )
+        return "\n\n".join(parts)
+
     async def generate_focused_analysis(self, findings: Dict[str, Any], evidence: List[Dict[str, Any]], selected_question: str) -> Dict[str, Any]:
         """Generate analysis focused on a specific diagnostic question."""
         try:
-            # Deduplicate evidence first to ensure correct numbering
-            seen_sources = set()
-            unique_evidence = []
+            # Group evidence by link for deduplication and joining
+            grouped_by_link = {}
             for item in evidence:
-                key = (item.get('title', ''), item.get('year'), item.get('header', ''))
-                if key not in seen_sources:
-                    seen_sources.add(key)
-                    unique_evidence.append(item)
+                link = item.get('link', '')
+                if link not in grouped_by_link:
+                    grouped_by_link[link] = []
+                grouped_by_link[link].append(item)
             
             # Format evidence for LLM with numbered references
-            evidence_text = ""
-            for i, item in enumerate(unique_evidence, 1):
-                evidence_text += f"""
-                Evidence ({i}):
-                Source: {item.get('title', '')} ({item.get('year', '')})
-                Section: {item.get('header', '')}
-                Content: {item.get('enriched_section_text', '')}
-                ---
-                """
+            evidence_text = self.format_evidence_with_id(evidence)
             
             prompt = f"""
             Patient Clinical Findings:
@@ -708,55 +1043,87 @@ class DiagnosticAgent:
             Format your response clearly and focus specifically on answering the question asked.
             """
             
-            response = self.openai_client.chat.completions.create(
-                model="gpt-4",
-                messages=[
-                    {"role": "system", "content": self.focused_question_prompt},
-                    {"role": "user", "content": prompt}
-                ],
-                temperature=0.1,
-                max_tokens=2000,
-                stream=True
-            )
+            from langchain.schema import HumanMessage, SystemMessage
             
-            # Create an async generator for streaming
+            messages = [
+                SystemMessage(content=self.focused_question_prompt),
+                HumanMessage(content=prompt)
+            ]
+            
+            # Use streaming for faster response
             async def diagnosis_stream():
-                for chunk in response:
-                    delta = chunk.choices[0].delta
-                    if hasattr(delta, "content") and delta.content:
-                        yield delta.content
+                full_response = ""
+                async for chunk in self.openai_client.astream(messages):
+                    if chunk.content:
+                        full_response += chunk.content
+                        # Display the chunk as is for streaming
+                        yield chunk.content
+                
+                # After streaming is complete, parse citations from the full response
+                try:
+                    import re
+                    
+                    # Extract citation numbers from the response using regex
+                    # Look for patterns like (1), (2), (3), etc.
+                    citation_pattern = r'\((\d+)\)'
+                    citations = re.findall(citation_pattern, full_response)
+                    
+                    # Convert to integers and remove duplicates while preserving order
+                    citation_numbers = []
+                    for citation in citations:
+                        num = int(citation)
+                        if num not in citation_numbers:
+                            citation_numbers.append(num)
+                    
+                    # Debug: Log the citations found
+                    print(f"DEBUG: Citations found in response: {citation_numbers}")
+                    
+                    # Map IDs back to metadata (using grouped sources)
+                    mapped = []
+                    for i, (link, chunks) in enumerate(grouped_by_link.items(), 1):
+                        if i in citation_numbers:
+                            first_chunk = chunks[0]
+                            mapped.append({
+                                "id": i,
+                                "title": first_chunk.get("title", ""),
+                                "year": first_chunk.get("year", ""),
+                                "link": link
+                            })
+                    
+                    # Debug: Log the final mapped citations
+                    print(f"DEBUG: Final mapped diagnostic citations: {mapped}")
+                    
+                    # Store citations in session state for later retrieval
+                    import streamlit as st
+                    if 'diagnostic_citations' not in st.session_state:
+                        st.session_state.diagnostic_citations = {}
+                    st.session_state.diagnostic_citations['focused'] = mapped
+                            
+                except Exception as e:
+                    print(f"DEBUG: Error parsing citations: {e}")
+                    st.session_state.diagnostic_citations = {}
             
-            # Return the generator for streaming
+            # Return the generator for streaming and grouped evidence for citation mapping
             return {
                 "diagnosis_generator": diagnosis_stream(),
-                "evidence": unique_evidence  # Keep deduplicated evidence for parsing later
+                "evidence": [chunks[0] for link, chunks in grouped_by_link.items()]  # All evidence for reference
             }
-            
         except Exception as e:
             raise Exception(f"Error generating focused analysis: {e}")
 
     async def generate_diagnoses(self, findings: Dict[str, Any], evidence: List[Dict[str, Any]]) -> Dict[str, Any]:
         """Generate potential diagnoses based on findings and evidence."""
         try:
-            # Deduplicate evidence first to ensure correct numbering
-            seen_sources = set()
-            unique_evidence = []
+            # Group evidence by link for deduplication and joining
+            grouped_by_link = {}
             for item in evidence:
-                key = (item.get('title', ''), item.get('year'), item.get('header', ''))
-                if key not in seen_sources:
-                    seen_sources.add(key)
-                    unique_evidence.append(item)
+                link = item.get('link', '')
+                if link not in grouped_by_link:
+                    grouped_by_link[link] = []
+                grouped_by_link[link].append(item)
             
             # Format evidence for LLM with numbered references
-            evidence_text = ""
-            for i, item in enumerate(unique_evidence, 1):
-                evidence_text += f"""
-                Evidence ({i}):
-                Source: {item.get('title', '')} ({item.get('year', '')})
-                Section: {item.get('header', '')}
-                Content: {item.get('enriched_section_text', '')}
-                ---
-                """
+            evidence_text = self.format_evidence_with_id(evidence)
             
             prompt = f"""
             Patient Clinical Findings:
@@ -775,30 +1142,71 @@ class DiagnosticAgent:
             Format your response clearly with numbered diagnoses and structured reasoning. Always cite your sources with numbered references.
             """
             
-            response = self.openai_client.chat.completions.create(
-                model="gpt-4",
-                messages=[
-                    {"role": "system", "content": self.diagnosis_prompt},
-                    {"role": "user", "content": prompt}
-                ],
-                temperature=0.1,
-                max_tokens=2000,
-                stream=True
-            )
+            from langchain.schema import HumanMessage, SystemMessage
             
-            # Create an async generator for streaming
+            messages = [
+                SystemMessage(content=self.diagnosis_prompt),
+                HumanMessage(content=prompt)
+            ]
+            
+            # Use streaming for faster response
             async def diagnosis_stream():
-                for chunk in response:
-                    delta = chunk.choices[0].delta
-                    if hasattr(delta, "content") and delta.content:
-                        yield delta.content
+                full_response = ""
+                async for chunk in self.openai_client.astream(messages):
+                    if chunk.content:
+                        full_response += chunk.content
+                        # Display the chunk as is for streaming
+                        yield chunk.content
+                
+                # After streaming is complete, parse citations from the full response
+                try:
+                    import re
+                    
+                    # Extract citation numbers from the response using regex
+                    # Look for patterns like (1), (2), (3), etc.
+                    citation_pattern = r'\((\d+)\)'
+                    citations = re.findall(citation_pattern, full_response)
+                    
+                    # Convert to integers and remove duplicates while preserving order
+                    citation_numbers = []
+                    for citation in citations:
+                        num = int(citation)
+                        if num not in citation_numbers:
+                            citation_numbers.append(num)
+                    
+                    # Debug: Log the citations found
+                    print(f"DEBUG: Citations found in response: {citation_numbers}")
+                    
+                    # Map IDs back to metadata (using grouped sources)
+                    mapped = []
+                    for i, (link, chunks) in enumerate(grouped_by_link.items(), 1):
+                        if i in citation_numbers:
+                            first_chunk = chunks[0]
+                            mapped.append({
+                                "id": i,
+                                "title": first_chunk.get("title", ""),
+                                "year": first_chunk.get("year", ""),
+                                "link": link
+                            })
+                    
+                    # Debug: Log the final mapped citations
+                    print(f"DEBUG: Final mapped diagnosis citations: {mapped}")
+                    
+                    # Store citations in session state for later retrieval
+                    import streamlit as st
+                    if 'diagnostic_citations' not in st.session_state:
+                        st.session_state.diagnostic_citations = {}
+                    st.session_state.diagnostic_citations['comprehensive'] = mapped
+                            
+                except Exception as e:
+                    print(f"DEBUG: Error parsing citations: {e}")
+                    st.session_state.diagnostic_citations = {}
             
-            # Return the generator for streaming
+            # Return the generator for streaming and grouped evidence for citation mapping
             return {
                 "diagnosis_generator": diagnosis_stream(),
-                "evidence": unique_evidence  # Keep deduplicated evidence for parsing later
+                "evidence": [chunks[0] for link, chunks in grouped_by_link.items()]  # All evidence for reference
             }
-            
         except Exception as e:
             raise Exception(f"Error generating diagnoses: {e}")
 
@@ -849,16 +1257,15 @@ class DiagnosticAgent:
                 question=question
             )
             
-            response = self.openai_client.chat.completions.create(
-                model="gpt-4",
-                messages=[
-                    {"role": "system", "content": "You are a helpful assistant that decides if existing information is sufficient."},
-                    {"role": "user", "content": prompt}
-                ],
-                temperature=0.0
-            )
+            from langchain.schema import HumanMessage, SystemMessage
             
-            decision = response.choices[0].message.content.strip().lower()
+            messages = [
+                SystemMessage(content="You are a helpful assistant that decides if existing information is sufficient."),
+                HumanMessage(content=prompt)
+            ]
+            
+            response = await self.openai_client.ainvoke(messages)
+            decision = response.content.strip().lower()
             return "reuse" in decision
             
         except Exception as e:
@@ -904,23 +1311,18 @@ class DiagnosticAgent:
                 IMPORTANT: When referencing information, include numbered citations (1), (2), (3), etc. corresponding to the evidence sources above.
                 """
                 
-                response = self.openai_client.chat.completions.create(
-                    model="gpt-4",
-                    messages=[
-                        {"role": "system", "content": self.focused_question_prompt},
-                        {"role": "user", "content": prompt}
-                    ],
-                    temperature=0.1,
-                    max_tokens=1000,
-                    stream=True
-                )
+                from langchain.schema import HumanMessage, SystemMessage
+                
+                messages = [
+                    SystemMessage(content=self.focused_question_prompt),
+                    HumanMessage(content=prompt)
+                ]
                 
                 # Collect streamed response
                 answer = ""
-                for chunk in response:
-                    delta = chunk.choices[0].delta
-                    if hasattr(delta, "content") and delta.content:
-                        answer += delta.content
+                async for chunk in self.openai_client.astream(messages):
+                    if chunk.content:
+                        answer += chunk.content
                 
                 return {
                     "question": question,
@@ -932,16 +1334,15 @@ class DiagnosticAgent:
                 
             else:
                 # Need new search - generate search queries for the follow-up question
-                search_query_response = self.openai_client.chat.completions.create(
-                    model="gpt-4",
-                    messages=[
-                        {"role": "system", "content": self.evidence_search_prompt},
-                        {"role": "user", "content": f"Generate 3-5 specific search queries for this follow-up question: {question}"}
-                    ],
-                    temperature=0.1
-                )
+                from langchain.schema import HumanMessage, SystemMessage
                 
-                queries_text = search_query_response.choices[0].message.content.strip()
+                search_messages = [
+                    SystemMessage(content=self.evidence_search_prompt),
+                    HumanMessage(content=f"Generate 3-5 specific search queries for this follow-up question: {question}")
+                ]
+                
+                search_query_response = await self.openai_client.ainvoke(search_messages)
+                queries_text = search_query_response.content.strip()
                 queries = [q.strip().lstrip('- •*1234567890.').strip() for q in queries_text.split('\n') if q.strip()][:5]
                 
                 # Search for new evidence
@@ -989,23 +1390,18 @@ class DiagnosticAgent:
                 IMPORTANT: When referencing information, include numbered citations (1), (2), (3), etc. corresponding to the evidence numbers above.
                 """
                 
-                response = self.openai_client.chat.completions.create(
-                    model="gpt-4",
-                    messages=[
-                        {"role": "system", "content": self.focused_question_prompt},
-                        {"role": "user", "content": prompt}
-                    ],
-                    temperature=0.1,
-                    max_tokens=1000,
-                    stream=True
-                )
+                from langchain.schema import HumanMessage, SystemMessage
+                
+                response_messages = [
+                    SystemMessage(content=self.focused_question_prompt),
+                    HumanMessage(content=prompt)
+                ]
                 
                 # Collect streamed response
                 answer = ""
-                for chunk in response:
-                    delta = chunk.choices[0].delta
-                    if hasattr(delta, "content") and delta.content:
-                        answer += delta.content
+                async for chunk in self.openai_client.astream(response_messages):
+                    if chunk.content:
+                        answer += chunk.content
                 
                 # Format new sources
                 new_sources = []
@@ -1032,47 +1428,35 @@ class DiagnosticAgent:
     async def diagnose_patient(self, patient_data: Dict[str, Any], top_k: int = 10, selected_question: str = None) -> Dict[str, Any]:
         """Main method to perform diagnostic analysis."""
         try:
-            # Step 1: Extract key findings
-            findings = await self.extract_key_findings(patient_data)
+            # Step 1: Extract key findings (now streaming)
+            findings_result = await self.extract_key_findings(patient_data)
             
-            # Step 2: Generate search queries
-            search_queries = await self.generate_search_queries(findings)
+            # Step 2: Generate search queries (still synchronous for now)
+            # We need to get the processed summary from session state or run a quick extraction
+            # For now, let's use the original patient summary for search queries
+            patient_summary = patient_data.get('patient_summary', '')
+            search_queries = await self.generate_search_queries({"processed_summary": patient_summary})
             
             # Step 3: Search for evidence
             evidence = await self.search_for_evidence(search_queries, top_k=top_k//len(search_queries) + 1)
             
-            # Step 4: Generate diagnoses (returns generator)
+            # Step 4: Generate diagnoses (streaming format with citation parsing)
             if selected_question:
-                diagnosis_result = await self.generate_focused_analysis(findings, evidence, selected_question)
+                diagnosis_result = await self.generate_focused_analysis(
+                    {"processed_summary": patient_summary}, evidence, selected_question
+                )
             else:
-                diagnosis_result = await self.generate_diagnoses(findings, evidence)
+                diagnosis_result = await self.generate_diagnoses(
+                    {"processed_summary": patient_summary}, evidence
+                )
             
-            # Step 5: Format sources (deduplicate first, then create references)
-            seen_sources = set()
-            unique_evidence = []
-            for item in evidence:
-                key = (item.get('title', ''), item.get('year'), item.get('header', ''))
-                if key not in seen_sources:
-                    seen_sources.add(key)
-                    unique_evidence.append(item)
-            
-            sources = []
-            for item in unique_evidence:
-                sources.append({
-                    "title": item.get('title', ''),
-                    "year": item.get('year'),
-                    "journal": None,  # Not available in current schema
-                    "section": item.get('header', ''),
-                    "link": item.get('link', '')
-                })
-            
+            # Step 5: Return streaming format with both clinical summary and diagnosis
             return {
-                "patient_summary": findings["processed_summary"],
-                "key_findings": findings["key_findings"],
+                "patient_data": patient_data,
                 "search_queries": search_queries,
-                "sources": sources,
+                "clinical_summary_generator": findings_result["summary_generator"],
                 "diagnosis_generator": diagnosis_result["diagnosis_generator"],
-                "evidence": evidence  # Raw evidence for debugging
+                "evidence": diagnosis_result["evidence"]  # All evidence for reference
             }
             
         except Exception as e:
@@ -1101,15 +1485,15 @@ class OrchestratorQAAgent:
 
     async def _route(self, question: str) -> str:
         try:
-            response = self.openai_client.chat.completions.create(
-                model="gpt-4",
-                messages=[
-                    {"role": "system", "content": "You are a helpful assistant that classifies questions for routing."},
-                    {"role": "user", "content": self.routing_prompt.format(question=question)}
-                ],
-                temperature=0.0
-            )
-            classification = response.choices[0].message.content.strip().lower()
+            from langchain.schema import HumanMessage, SystemMessage
+            
+            messages = [
+                SystemMessage(content="You are a helpful assistant that classifies questions for routing."),
+                HumanMessage(content=self.routing_prompt.format(question=question))
+            ]
+            
+            response = await self.openai_client.ainvoke(messages)
+            classification = response.content.strip().lower()
             if "guideline" in classification:
                 return "guidelines"
             return "medline"
@@ -1125,15 +1509,15 @@ class OrchestratorQAAgent:
         ])
         prompt = self.reuse_decision_prompt.format(history=history_str, question=question)
         try:
-            response = self.openai_client.chat.completions.create(
-                model="gpt-4",
-                messages=[
-                    {"role": "system", "content": "You are a helpful assistant that decides if a new search is needed."},
-                    {"role": "user", "content": prompt}
-                ],
-                temperature=0.0
-            )
-            decision = response.choices[0].message.content.strip().lower()
+            from langchain.schema import HumanMessage, SystemMessage
+            
+            messages = [
+                SystemMessage(content="You are a helpful assistant that decides if a new search is needed."),
+                HumanMessage(content=prompt)
+            ]
+            
+            response = await self.openai_client.ainvoke(messages)
+            decision = response.content.strip().lower()
             print(f"[DEBUG] GPT decision for reuse: {decision}")
             return "reuse" in decision
         except Exception as e:

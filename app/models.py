@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field
-from typing import List, Optional, Dict
+from typing import List, Optional, Dict, Any
 
 class QuestionRequest(BaseModel):
     """Request model for question answering."""
@@ -82,3 +82,8 @@ class DiagnosisResponse(BaseModel):
     search_queries: List[str] = Field(..., description="Search queries used to find evidence")
     sources: List[Source] = Field(..., description="All sources consulted")
     recommendations: str = Field(..., description="Clinical recommendations and next steps") 
+
+class CitedAnswer(BaseModel):
+    """Answer based only on the given sources, with citations."""
+    answer: str = Field(..., description="Answer grounded in the sources")
+    citations: List[int] = Field(..., description="IDs of sources used") 

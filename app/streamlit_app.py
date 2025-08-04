@@ -27,13 +27,11 @@ st.sidebar.title("🏥 Medical AI Assistant")
 page = st.sidebar.selectbox("Choose a function:", ["Q&A Chat", "Diagnostic Analysis", "About"])
 
 if page == "Q&A Chat":
-    # Existing Q&A functionality
-    async def process_streaming_response(response_data: dict, message_placeholder):
-        """Process streaming response and update UI."""
-        answer_text = ""
-        async for chunk in response_data["answer_generator"]:
-            answer_text += chunk
-            message_placeholder.markdown(answer_text + "▌")
+    # Updated Q&A functionality for citation-aware responses
+    def process_cited_response(response_data: dict, message_placeholder):
+        """Process citation-aware response and update UI."""
+        # Display the answer directly (no streaming needed)
+        answer_text = response_data["answer"]
         message_placeholder.markdown(answer_text)
         
         # Return complete response for history
@@ -177,10 +175,8 @@ if page == "Q&A Chat":
                 # Create placeholder for streaming response
                 message_placeholder = st.empty()
                 
-                # Process streaming response
-                result = asyncio.run(
-                    process_streaming_response(response, message_placeholder)
-                )
+                # Process citation-aware response
+                result = process_cited_response(response, message_placeholder)
                 
                 # Store in chat history
                 st.session_state.chat_history.append(result)
@@ -190,27 +186,37 @@ if page == "Q&A Chat":
                     st.markdown("**🔍 Search Query:**")
                     st.info(result["search_query"])
                 
-                # Show sources
-                st.markdown("**📚 Sources:**")
-                # Sources are already deduplicated in the agent
-                for i, source in enumerate(result["sources"], 1):
-                    year = source.get('year', '')
-                    title = source.get('title', '')
-                    link = source.get('link') or source.get('url', '')
-                    # Only show year if present
-                    show_year = f" ({year})" if year else ""
-                    # Add MedlinePlus attribution if it's a Medline source (has url but no year)
-                    is_medline = source.get('url') and not year
-                    medline_suffix = " (MedlinePlus)" if is_medline else ""
-                    display_title = f"{title}{show_year}{medline_suffix}"
-                    if link:
-                        line = f"({i}) [{display_title}]({link})"
-                    else:
-                        line = f"({i}) {display_title}"
-                    st.markdown(line)
-                    header = source.get('header')
-                    if header:
-                        st.markdown(f"  *Header: {header}*")
+                # Show sources with citations
+                st.markdown("**📚 Sources Cited:**")
+                if result["sources"]:
+                    for source in result["sources"]:
+                        source_id = source.get('id', '')
+                        title = source.get('title', '')
+                        year = source.get('year', '')
+                        link = source.get('link') or source.get('url', '')
+                        meta_desc = source.get('meta_desc', '')
+                        
+                        # Format display title
+                        show_year = f" ({year})" if year else ""
+                        is_medline = source.get('url') and not year
+                        medline_suffix = " (MedlinePlus)" if is_medline else ""
+                        display_title = f"{title}{show_year}{medline_suffix}"
+                        
+                        # Display source with citation number
+                        if link:
+                            line = f"**({source_id})** [{display_title}]({link})"
+                        else:
+                            line = f"**({source_id})** {display_title}"
+                        st.markdown(line)
+                        
+                        # Show additional info if available
+                        if meta_desc:
+                            st.markdown(f"  *{meta_desc}*")
+                        header = source.get('header')
+                        if header:
+                            st.markdown(f"  *Header: {header}*")
+                else:
+                    st.info("No specific sources were cited in this answer.")
                 
                 # Show chunks if enabled
                 if show_chunks:
@@ -400,26 +406,48 @@ Patient: "I feel nauseous and sweaty, and I'm having trouble catching my breath.
                 st.success("✅ **Analysis Completed Successfully!**")
                 st.markdown("---")
                 
-                # Create tabs for better organization
-                tab1, tab2, tab3 = st.tabs(["📋 **Clinical Summary**", "🩺 **Diagnostic Analysis**", "📚 **Evidence Sources**"])
+                # Debug: Log the result structure
+                print(f"DEBUG: Result keys: {list(result.keys())}")
+                print(f"DEBUG: Result has 'answer': {'answer' in result}")
+                print(f"DEBUG: Result has 'citations': {'citations' in result}")
                 
-                with tab1:
-                    # Patient summary
-                    st.markdown("#### 👤 Processed Patient Summary")
-                    with st.container():
-                        st.info(result["patient_summary"])
+                # Create two columns instead of tabs
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    # Clinical Summary column
+                    st.markdown("#### 📋 **Clinical Summary**")
+                    
+                    # Create placeholder for streaming clinical summary
+                    clinical_placeholder = st.empty()
+                    
+                    # Process streaming clinical summary
+                    async def process_clinical_stream():
+                        clinical_text = ""
+                        async for chunk in result["clinical_summary_generator"]:
+                            clinical_text += chunk
+                            clinical_placeholder.markdown(clinical_text + "▌")
+                        clinical_placeholder.markdown(clinical_text)
+                        return clinical_text
+                    
+                    # Get the complete clinical summary text
+                    complete_clinical = asyncio.run(process_clinical_stream())
                     
                     st.markdown("")  # Spacer
                     
-                    # Key findings
-                    st.markdown("#### 🔍 Key Clinical Findings")
-                    with st.container():
-                        for i, finding in enumerate(result["key_findings"], 1):
-                            st.markdown(f"**{i}.** {finding}")
+                    # Key findings (retrieved from session state after streaming)
+                    st.markdown("**🔍 Key Clinical Findings**")
+                    clinical_findings = st.session_state.get('clinical_findings', {})
+                    if clinical_findings and 'key_findings' in clinical_findings:
+                        with st.container():
+                            for i, finding in enumerate(clinical_findings['key_findings'], 1):
+                                st.markdown(f"**{i}.** {finding}")
+                    else:
+                        st.info("Key findings will appear here after analysis completes.")
                 
-                with tab2:
-                    # Streaming diagnosis analysis
-                    st.markdown("#### 🩺 Analysis & Recommendations")
+                with col2:
+                    # Diagnostic Analysis column
+                    st.markdown("#### 🩺 **Diagnostic Analysis**")
                     if selected_question:
                         st.markdown(f"*🎯 Focused on: {selected_question}*")
                         st.markdown("")
@@ -438,53 +466,31 @@ Patient: "I feel nauseous and sweaty, and I'm having trouble catching my breath.
                     
                     # Get the complete diagnosis text
                     complete_diagnosis = asyncio.run(process_diagnosis_stream())
-                
-                # Parse the completed diagnosis
-                parsed_result = st.session_state.qa_agent.diagnostic_agent.parse_completed_diagnosis(
-                    complete_diagnosis, result["evidence"]
-                )
-                
-                # Update result with parsed diagnoses for history
-                result_for_history = {
-                    **result,
-                    "recommendations": complete_diagnosis,
-                    "potential_diagnoses": parsed_result["parsed_diagnoses"]
-                }
-                
-                # Store in history
-                st.session_state.diagnostic_history.append({
-                    "patient_data": patient_data,
-                    "result": result_for_history,
-                    "timestamp": st.session_state.get('timestamp', 'now')
-                })
-                
-                # Store current analysis in session state for follow-up persistence
-                st.session_state.current_analysis = {
-                    "result": result_for_history,
-                    "patient_data": patient_data,
-                    "selected_question": selected_question,
-                    "diag_top_k": diag_top_k
-                }
-                
-                with tab3:
-                    # Sources section in the third tab
-                    st.markdown("#### 📚 Evidence Sources")
-                    st.caption("Medical literature used for this analysis")
                     
-                    # Sources are already deduplicated in the agent
-                    for i, source in enumerate(result["sources"], 1):
-                        title = source.get('title', '')
-                        year = source.get('year', '')
-                        section = source.get('section', '')
-                        link = source.get('link', '')
-                        year_str = f" ({year})" if year else ""
-                        section_str = f" - {section}" if section else ""
-                        
-                        with st.container():
-                            if link:
-                                st.markdown(f"**({i})** [{title}{year_str}{section_str}]({link})")
-                            else:
-                                st.markdown(f"**({i})** {title}{year_str}{section_str}")
+                    # Add evidence sources at the end of the analysis
+                    st.markdown("---")
+                    st.markdown("#### 📚 Evidence Sources Cited")
+                    st.caption("Medical literature actually used in this analysis")
+                    
+                    # Retrieve citations from session state (parsed during streaming)
+                    citations_key = 'focused' if selected_question else 'comprehensive'
+                    citations = st.session_state.get('diagnostic_citations', {}).get(citations_key, [])
+                    
+                    if citations:
+                        for citation in citations:
+                            source_id = citation.get('id', '')
+                            title = citation.get('title', '')
+                            year = citation.get('year', '')
+                            link = citation.get('link', '')
+                            year_str = f" ({year})" if year else ""
+                            
+                            with st.container():
+                                if link:
+                                    st.markdown(f"**({source_id})** [{title}{year_str}]({link})")
+                                else:
+                                    st.markdown(f"**({source_id})** {title}{year_str}")
+                    else:
+                        st.info("No specific sources were cited in this analysis.")
                     
                     # Search queries used (if enabled)
                     if show_search_queries:
@@ -515,6 +521,33 @@ Patient: "I feel nauseous and sweaty, and I'm having trouble catching my breath.
                                     st.markdown(f"**Section:** {header}")
                                 st.markdown(f"**Content:** {evidence.get('enriched_section_text', '')}")
                                 st.markdown(f"**Search Query:** {evidence.get('search_query', '')}")
+                
+                # Parse the completed diagnosis and store in history
+                # Both clinical summary and diagnosis are now streaming
+                clinical_findings = st.session_state.get('clinical_findings', {})
+                
+                result_for_history = {
+                    **result,
+                    "patient_summary": clinical_findings.get('processed_summary', ''),
+                    "key_findings": clinical_findings.get('key_findings', []),
+                    "recommendations": complete_diagnosis,
+                    "potential_diagnoses": []  # Will be parsed if needed
+                }
+                
+                # Store in history
+                st.session_state.diagnostic_history.append({
+                    "patient_data": patient_data,
+                    "result": result_for_history,
+                    "timestamp": st.session_state.get('timestamp', 'now')
+                })
+                
+                # Store current analysis in session state for follow-up persistence
+                st.session_state.current_analysis = {
+                    "result": result_for_history,
+                    "patient_data": patient_data,
+                    "selected_question": selected_question,
+                    "diag_top_k": diag_top_k
+                }
                 
             except Exception as e:
                 st.error(f"Error during analysis: {str(e)}")
@@ -551,7 +584,7 @@ Patient: "I feel nauseous and sweaty, and I'm having trouble catching my breath.
             
             # Text input with better styling
             follow_up_question = st.text_input(
-                "",
+                "Follow-up Question",
                 placeholder="💭 Type your follow-up question here (e.g., 'What additional tests should be ordered?')",
                 key="followup_input",
                 label_visibility="collapsed"
